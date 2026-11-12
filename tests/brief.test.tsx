@@ -47,6 +47,26 @@ test('a brief the model sets is drawn above the prompt', async ($, on) => {
   await ui.unmount()
 })
 
+test('the border, the current step and done steps are colored', async $ => {
+  await $.tool.call({
+    tool: TOOL,
+    goal: 'Fix the login bug',
+    steps: ['Reproduce it', 'Patch the handler', 'Run the suite'],
+    current: 1,
+  })
+
+  const ui = await $.ui.mount(BAND)
+  const color = async (text: RegExp) =>
+    (await ui.find({ type: 'Text', text }))?.props.color
+
+  expect((await ui.find({ type: 'Box' }))?.props.borderColor).toBe('suggestion')
+  expect(await color(/Working on/)).toBe(undefined)
+  expect(await color(/Reproduce/)).toBe('success')
+  expect(await color(/Patch/)).toBe('suggestion')
+  expect(await color(/suite/)).toBe(undefined)
+  await ui.unmount()
+})
+
 const TURN = {
   answer: 'Done.',
   durationMs: 1000,

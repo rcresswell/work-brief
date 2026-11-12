@@ -1,10 +1,12 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { Register, ThemeKey } from 'claude-code'
 
 import type { Brief } from '../types'
 
 const TOOL = 'mcp__work-brief__set'
 const MAX_STEPS = 8
+const ACCENT: ThemeKey = 'suggestion'
+const DONE: ThemeKey = 'success'
 
 // Change the tag when a brief's fields change: it declines what an earlier
 // version stored, which outlives a reload.
@@ -54,6 +56,16 @@ function mark(index: number, current: number): string {
   }
 
   return index === current ? '[>]' : '[ ]'
+}
+
+// Theme keys, so the colors follow the person's theme. Steps still to come
+// keep the plain text color.
+function stepColor(index: number, current: number): ThemeKey | undefined {
+  if (index < current) {
+    return DONE
+  }
+
+  return index === current ? ACCENT : undefined
 }
 
 export const register: Register = on => {
@@ -130,12 +142,18 @@ export const register: Register = on => {
     const { Box, Text } = $.ui.resolve(e)
 
     return (
-      <Box flexDirection="column" borderStyle="round" paddingX={1}>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={ACCENT}
+        paddingX={1}
+      >
         <Text bold>Working on: {shown.goal}</Text>
         {shown.steps.map((step, index) => (
           <Text
             bold={index === shown.current}
             dimColor={index < shown.current}
+            color={stepColor(index, shown.current)}
           >
             {mark(index, shown.current)} {step}
           </Text>
