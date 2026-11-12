@@ -1,0 +1,5 @@
+{
+  "name": "work-brief",
+  "owner": { "name": "Richie Cresswell" },
+  "plugins": [{ "name": "work-brief", "source": "./" }]
+}
