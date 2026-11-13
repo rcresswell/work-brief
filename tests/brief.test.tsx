@@ -234,34 +234,44 @@ test('a brief with no steps shows its time on the goal', async ($, on) => {
   await ui.unmount()
 })
 
-test('while no turn runs the band is left to the engine', async ($, on) => {
-  on('clock.now', () => ({ value: 0 }))
-  on('ui.render', ($, e) => {
-    const { Text } = $.ui.resolve(e)
+const IDLE = { ...BAND, props: { ...BAND.props, isWorking: false } } as const
+const TIDY = { tool: TOOL, goal: 'Tidy up', steps: ['Only step'] } as const
+const NEXT = { text: 'next thing', turnId: 'turn-2' } as const
 
-    return <Text>engine</Text>
-  })
-  await $.tool.call({ tool: TOOL, goal: 'Tidy up', steps: ['Only step'] })
-
-  const ui = await $.ui.mount({
-    ...BAND,
-    props: { ...BAND.props, isWorking: false },
-  })
-
-  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
-  await ui.unmount()
-})
-
-test('a turn that ends with an answer takes the brief down', async ($, on) => {
-  on('clock.now', () => ({ value: 0 }))
+test('finished work stays up after its turn, dimmed, its times kept', async ($, on) => {
+  let now = 1_000
+  on('clock.now', () => ({ value: now }))
   on('turn.complete', () => ({ text: '' }))
-  on('ui.render', ($, e) => {
-    const { Text } = $.ui.resolve(e)
-
-    return <Text>engine</Text>
-  })
-  await $.tool.call({ tool: TOOL, goal: 'Tidy up', steps: ['Only step'] })
+  await $.tool.call(TIDY)
+  now += 20_000
+  await $.tool.call({ ...TIDY, current: 1 })
   await $.turn.complete(TURN)
+  now += 60_000
+
+  const ui = await $.ui.mount(IDLE)
+  const goal = await ui.find({ type: 'Text', text: /Tidy/ })
+
+  expect(goal?.text).toBe('Worked on: Tidy up')
+  expect(goal?.props.dimColor).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /Only/ }))?.text).toBe(
+    '[x] Only step  20s',
+  )
+  expect((await ui.find({ type: 'Box' }))?.props.borderColor).toBe('inactive')
+  await ui.unmount()
+})
+
+test('the next turn takes a finished brief down', async ($, on) => {
+  on('clock.now', () => ({ value: 0 }))
+  on('turn.complete', () => ({ text: '' }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>engine</Text>
+  })
+  await $.tool.call({ ...TIDY, current: 1 })
+  await $.turn.complete(TURN)
+  await $.turn.start(NEXT)
 
   const ui = await $.ui.mount(BAND)
 
@@ -269,16 +279,105 @@ test('a turn that ends with an answer takes the brief down', async ($, on) => {
   await ui.unmount()
 })
 
-test('an interrupted turn keeps its brief for the resumed work', async ($, on) => {
+test("a subagent's turn starting leaves a finished brief up", async ($, on) => {
   on('clock.now', () => ({ value: 0 }))
   on('turn.complete', () => ({ text: '' }))
-  await $.tool.call({ tool: TOOL, goal: 'Tidy up', steps: ['Only step'] })
-  await $.turn.complete({ ...TURN, isAborted: true, reason: 'aborted' })
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  await $.tool.call({ ...TIDY, current: 1 })
+  await $.turn.complete(TURN)
+  await $.turn.start({ ...NEXT, agentId: 'agent-1' })
+
+  const ui = await $.ui.mount(IDLE)
+
+  expect((await ui.find({ type: 'Text', text: /Tidy/ }))?.text).toBe(
+    'Worked on: Tidy up',
+  )
+  await ui.unmount()
+})
+
+test('a turn that ends with steps left is waiting on the person', async ($, on) => {
+  let now = 1_000
+  on('clock.now', () => ({ value: now }))
+  on('turn.complete', () => ({ text: '' }))
+  await $.tool.call({ ...PLAN, steps: ['Reproduce it', 'Waiting for a go-ahead'] })
+  now += 6_000
+  await $.turn.complete(TURN)
+  now += 60_000
+
+  const ui = await $.ui.mount(IDLE)
+  const goal = await ui.find({ type: 'Text', text: /login/ })
+  const step = await ui.find({ type: 'Text', text: /\[>\]/ })
+
+  expect(goal?.text).toBe('Waiting on you: Fix the login bug')
+  expect(goal?.props.dimColor).toBe(false)
+  expect(step?.text).toBe('[>] Waiting for a go-ahead  6s')
+  expect(step?.props.color).toBe('warning')
+  expect((await ui.find({ type: 'Box' }))?.props.borderColor).toBe('warning')
+  await ui.unmount()
+})
+
+test('the next turn resumes work that was waiting, not counting the wait', async ($, on) => {
+  let now = 1_000
+  on('clock.now', () => ({ value: now }))
+  on('turn.complete', () => ({ text: '' }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  await $.tool.call(TIDY)
+  now += 6_000
+  await $.turn.complete(TURN)
+  now += 60_000
+  await $.turn.start(NEXT)
+  now += 2_000
 
   const ui = await $.ui.mount(BAND)
 
+  expect((await ui.find({ type: 'Text', text: /Tidy/ }))?.text).toBe(
+    'Working on: Tidy up',
+  )
   expect((await ui.find({ type: 'Text', text: /\[>\] Only/ }))?.text).toBe(
-    '[>] Only step  0s',
+    '[>] Only step  8s',
+  )
+  await ui.unmount()
+})
+
+test('an interrupted turn says so and stops the clock', async ($, on) => {
+  let now = 1_000
+  on('clock.now', () => ({ value: now }))
+  on('turn.complete', () => ({ text: '' }))
+  await $.tool.call(TIDY)
+  now += 10_000
+  await $.turn.complete({ ...TURN, isAborted: true, reason: 'aborted' })
+  now += 100_000
+
+  const ui = await $.ui.mount(IDLE)
+
+  expect((await ui.find({ type: 'Text', text: /Tidy/ }))?.text).toBe(
+    'Interrupted: Tidy up',
+  )
+  expect((await ui.find({ type: 'Text', text: /\[>\] Only/ }))?.text).toBe(
+    '[>] Only step  10s',
+  )
+  await ui.unmount()
+})
+
+test('the next turn resumes interrupted work, not counting the pause', async ($, on) => {
+  let now = 1_000
+  on('clock.now', () => ({ value: now }))
+  on('turn.complete', () => ({ text: '' }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  await $.tool.call(TIDY)
+  now += 10_000
+  await $.turn.complete({ ...TURN, isAborted: true, reason: 'aborted' })
+  now += 100_000
+  await $.turn.start(NEXT)
+  now += 5_000
+
+  const ui = await $.ui.mount(BAND)
+
+  expect((await ui.find({ type: 'Text', text: /Tidy/ }))?.text).toBe(
+    'Working on: Tidy up',
+  )
+  expect((await ui.find({ type: 'Text', text: /\[>\] Only/ }))?.text).toBe(
+    '[>] Only step  15s',
   )
   await ui.unmount()
 })

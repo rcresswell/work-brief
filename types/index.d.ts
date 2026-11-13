@@ -9,6 +9,10 @@ export type Brief = {
   // How long each finished step ran, in milliseconds, by its index in steps;
   // null for a step that is not finished or was never the current one.
   took: (number | null)[]
+  // Set once the turn doing the work has ended: when, in milliseconds since
+  // the epoch, and whether it ended with an answer and not an interrupt or
+  // error. Null while the work is under way.
+  ended: { at: number; isAnswered: boolean } | null
 }
 
 declare module 'claude-code' {

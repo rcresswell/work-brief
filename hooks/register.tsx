@@ -5,7 +5,6 @@ import type { Brief } from '../types'
 
 const TOOL = 'mcp__work-brief__set'
 const MAX_STEPS = 8
-const ACCENT: ThemeKey = 'suggestion'
 const DONE: ThemeKey = 'success'
 // Tool calls on the main loop without a brief update before Claude is reminded.
 const STALE_AFTER = 15
@@ -13,7 +12,7 @@ const STALE_AFTER = 15
 // Change the tag when a brief's fields change: it declines what an earlier
 // version stored, which outlives a reload.
 const brief = atom({ plugin: 'work-brief', key: 'brief' } as const, null, {
-  shape: 'brief-3',
+  shape: 'brief-4',
 })
 
 const NUDGE = `${STALE_AFTER} tool calls have run since the work brief was last set. If the work has moved on, or no brief is shown, call ${TOOL} now with the goal, the steps and the current step. If it is still accurate, carry on. Do not mention this reminder.`
@@ -26,16 +25,24 @@ Before starting any work that will take more than a couple of tool calls, call $
 - steps: up to ${MAX_STEPS} short lines, the plan in order. Leave out for single-step work.
 - current: the index (from 0) of the step you are on; the number of steps once all are done.
 
-Call it again whenever you move to the next step or the plan changes. The brief is taken down by itself when your turn ends with an answer. Pass the whole brief each time; it replaces the one shown. Skip it for a quick answer or a one-off lookup.`
+Call it again whenever you move to the next step or the plan changes. The brief stays up after your turn ends, and how you leave it matters:
 
-type Plan = Omit<Brief, 'since' | 'took'>
+- Work finished: before your final answer, set current to the number of steps. The brief then reads as done and comes down at the person's next prompt.
+- Stopping to ask the person something, or for their go-ahead: make the current step say what you are waiting for, such as "Waiting for a choice between public and private", adding that step if the brief has none. The brief then reads "Waiting on you" and picks up again at their reply. Pass the whole brief each time; it replaces the one shown. Skip it for a quick answer or a one-off lookup.`
+
+type Plan = Omit<Brief, 'since' | 'took' | 'ended'>
 
 // The brief to show once Claude sets `plan` over the brief `shown`. The clock
 // keeps running through an update that stays on the same step; a step that
 // work moves off keeps the time it ran, for as long as the goal stands.
 function advance(shown: Brief | null, plan: Plan, now: number): Brief {
   if (shown === null || shown.goal !== plan.goal) {
-    return { ...plan, since: now, took: plan.steps.map(() => null) }
+    return {
+      ...plan,
+      since: now,
+      took: plan.steps.map(() => null),
+      ended: null,
+    }
   }
 
   const active = shown.steps[shown.current]
@@ -57,7 +64,45 @@ function advance(shown: Brief | null, plan: Plan, now: number): Brief {
         ? (known[index] ?? null)
         : null,
     ),
+    ended: null,
   }
+}
+
+type Phase = 'working' | 'waiting' | 'interrupted' | 'finished'
+
+// Theme keys, so the colors follow the person's theme.
+const LOOK: Record<Phase, { title: string; accent: ThemeKey; isDim: boolean }> = {
+  working: { title: 'Working on', accent: 'suggestion', isDim: false },
+  waiting: { title: 'Waiting on you', accent: 'warning', isDim: false },
+  interrupted: { title: 'Interrupted', accent: 'inactive', isDim: true },
+  finished: { title: 'Worked on', accent: 'inactive', isDim: true },
+}
+
+// A turn that ends with an answer while steps remain stopped to hear from
+// the person; with none remaining, the work is finished.
+function phaseOf(shown: Brief): Phase {
+  if (shown.ended === null) {
+    return 'working'
+  }
+
+  if (!shown.ended.isAnswered) {
+    return 'interrupted'
+  }
+
+  return shown.current < shown.steps.length ? 'waiting' : 'finished'
+}
+
+// The brief once the next turn starts. Finished work is over, so its brief
+// comes down. Work that was interrupted or waiting picks up again, its clock
+// not counting the time it sat stopped.
+function resume(shown: Brief | null, now: number): Brief | null {
+  if (shown === null || shown.ended === null) {
+    return shown
+  }
+
+  return phaseOf(shown) === 'finished'
+    ? null
+    : { ...shown, since: shown.since + now - shown.ended.at, ended: null }
 }
 
 function parse(input: Record<string, unknown>): Plan | string {
@@ -103,14 +148,17 @@ function elapsed(ms: number): string {
     : `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`
 }
 
-// Theme keys, so the colors follow the person's theme. Steps still to come
-// keep the plain text color.
-function stepColor(index: number, current: number): ThemeKey | undefined {
+// Steps still to come keep the plain text color.
+function stepColor(
+  index: number,
+  current: number,
+  accent: ThemeKey,
+): ThemeKey | undefined {
   if (index < current) {
     return DONE
   }
 
-  return index === current ? ACCENT : undefined
+  return index === current ? accent : undefined
 }
 
 export const register: Register = on => {
@@ -198,12 +246,26 @@ export const register: Register = on => {
     return { ...ran, context: [...(ran.context ?? []), NUDGE] }
   }).catch(($, e, next) => next(e))
 
-  // A turn that ends with an answer finished its work. One that was
-  // interrupted or errored keeps its brief for when the work resumes.
+  // The brief stays up when the main loop's turn ends, with its clock stopped,
+  // so the person can read what was done.
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined && e.reason === 'answer') {
-      await update($, brief, () => null)
+    if (e.agentId === undefined) {
+      const ended = { at: await $.clock.now(), isAnswered: e.reason === 'answer' }
+      await update($, brief, shown =>
+        shown === null || shown.ended !== null ? shown : { ...shown, ended },
+      )
       callsSinceSet = 0
+    }
+
+    return next(e)
+  })
+
+  // The main loop's next turn starts on the person's next prompt, typed
+  // while idle or queued behind the turn that just ended.
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      const now = await $.clock.now()
+      await update($, brief, shown => resume(shown, now))
     }
 
     return next(e)
@@ -211,24 +273,26 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const shown = await read($, brief)
-    isShown = !e.props.hasSurvey && e.props.isWorking && shown !== null
+    isShown = !e.props.hasSurvey && shown !== null && shown.ended === null
 
-    if (e.props.hasSurvey || !e.props.isWorking || shown === null) {
+    if (e.props.hasSurvey || shown === null) {
       return next(e)
     }
 
     const { Box, Text } = $.ui.resolve(e)
-    const clock = <Text dimColor>  {elapsed((await $.clock.now()) - shown.since)}</Text>
+    const { title, accent, isDim } = LOOK[phaseOf(shown)]
+    const until = shown.ended?.at ?? (await $.clock.now())
+    const clock = <Text dimColor>  {elapsed(until - shown.since)}</Text>
 
     return (
       <Box
         flexDirection="column"
         borderStyle="round"
-        borderColor={ACCENT}
+        borderColor={accent}
         paddingX={1}
       >
-        <Text bold>
-          Working on: {shown.goal}
+        <Text bold={!isDim} dimColor={isDim}>
+          {title}: {shown.goal}
           {shown.steps.length === 0 && clock}
         </Text>
         {shown.steps.map((step, index) => {
@@ -236,9 +300,9 @@ export const register: Register = on => {
 
           return (
             <Text
-              bold={index === shown.current}
-              dimColor={index < shown.current}
-              color={stepColor(index, shown.current)}
+              bold={!isDim && index === shown.current}
+              dimColor={isDim || index < shown.current}
+              color={stepColor(index, shown.current, accent)}
             >
               {mark(index, shown.current)} {step}
               {index === shown.current && clock}

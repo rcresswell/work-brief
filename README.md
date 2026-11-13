@@ -21,9 +21,14 @@ what it is up to, and that brief stays pinned in a box above the prompt while th
   its clock; moving to another step restarts it. A finished step keeps the time it took.
 - After 15 tool calls with no brief update, reminds Claude to refresh it. The reminder rides beside
   a tool result, where Claude reads it and the person never sees it.
-- Draws the brief in the band above the prompt while a turn is running. A turn that ends with an
-  answer takes the brief down. An interrupted turn hides it and brings it back, with its step
-  still in progress, when work resumes.
+- Draws the brief in the band above the prompt, and keeps it up when the turn ends, with its
+  clock stopped:
+  - "Worked on", dimmed, when every step is done. Your next prompt takes it down.
+  - "Waiting on you" when Claude stopped with steps left, usually to ask you something. The
+    current step says what it is waiting for.
+  - "Interrupted", dimmed, when you stopped the turn or it errored.
+- Waiting and interrupted work resumes at your next prompt, and the clock does not count the time
+  it sat stopped.
 
 The band is drawn on the terminal and desktop surfaces. Collapse it with ctrl+x ctrl+a.
 
